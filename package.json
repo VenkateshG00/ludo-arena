@@ -1,0 +1,32 @@
+{
+  "name": "ludo-arena",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Online multiplayer Ludo game",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently \"pnpm --filter @ludo/server dev\" \"pnpm --filter @ludo/web dev\"",
+    "build": "pnpm --filter @ludo/game-engine build && pnpm --filter @ludo/web build && pnpm --filter @ludo/server build",
+    "test": "pnpm --filter @ludo/game-engine test && pnpm --filter @ludo/server test && pnpm --filter @ludo/web test",
+    "lint": "pnpm -r lint",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "typescript": "^5.4.5"
+  },
+  "engines": {
+    "node": ">=20",
+    "pnpm": ">=9"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild",
+      "workerd",
+      "sharp"
+    ]
+  }
+}

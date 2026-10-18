@@ -1,0 +1,48 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  * {
+    box-sizing: border-box;
+  }
+  html, body, #root {
+    height: 100%;
+    margin: 0;
+  }
+  body {
+    font-family: "Nunito", sans-serif;
+    background: #0f0e1a;
+    color: #f0ece3;
+    -webkit-font-smoothing: antialiased;
+  }
+}
+
+@layer utilities {
+  .font-display {
+    font-family: "Fredoka One", sans-serif;
+  }
+}
+
+/* Token hover highlight */
+.token-legal:hover {
+  filter: brightness(1.25) drop-shadow(0 0 6px rgba(255,255,255,0.7));
+  cursor: pointer;
+}
+
+/* Smooth token movement */
+.token-svg {
+  transition: cx 0.35s cubic-bezier(0.34,1.56,0.64,1),
+              cy 0.35s cubic-bezier(0.34,1.56,0.64,1);
+}
+
+/* Reduce motion */
+@media (prefers-reduced-motion: reduce) {
+  .token-svg {
+    transition: none;
+  }
+  * {
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
