@@ -10,7 +10,8 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@ludo/game-engine": "workspace:*"
+    "@ludo/game-engine": "workspace:*",
+    "@supabase/supabase-js": "^2.118.0"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20240614.0",

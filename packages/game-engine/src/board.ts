@@ -1,43 +1,48 @@
 /**
  * Board coordinate mapping.
- * Converts logical token progress (trackPos / homeLanePos) to
+ * Converts logical token progress (absolute trackPos / home-lane pos) to
  * pixel coordinates for SVG rendering.
  *
  * The board is a 600×600 SVG with 15×15 grid cells (40px each).
- * Main track runs clockwise from red's entry square.
+ * Main track is a 52-square ring, clockwise from red's start square.
+ *
+ * trackPos semantics (must match the game engine constants):
+ *   - 0-51: absolute position on the shared ring
+ *     starts: red=0, green=13, yellow=26, blue=38
+ *     home-lane entries: red=51, green=11, yellow=25, blue=39
+ *   - home-lane tokens use trackPos 0-4; finished tokens rest on cell 5
+ *
+ * The ring passes through three of the four center-corner cells
+ * ((6,8),(8,8),(8,6)) — these are legitimate track positions.
+ * The fourth corner (6,6) is not on the ring.
  */
 
 import type { PlayerColor, Token } from "./types";
-import { COLOR_ENTRY } from "./constants";
 
 export const CELL = 40;      // px per grid cell
 export const BOARD_SIZE = 600;
 
-// Grid coordinates for each of the 52 main track squares (index = trackPos)
-// Starting at red entry (top-left area) going clockwise
+// Grid coordinates for each of the 52 ring squares (index = trackPos).
 const TRACK_GRID: [number, number][] = [
-  // Red side: going down col 6 (squares 0-5)
-  [6, 1], [6, 2], [6, 3], [6, 4], [6, 5], [6, 6],
-  // Bottom of top-left turning: row 6, cols 0-5 going left → right cross
-  [5, 6], [4, 6], [3, 6], [2, 6], [1, 6], [0, 6],
-  // Going down left side col 0 → row 8 (green entry area)
-  [0, 7], [0, 8],
-  // Green entry row 8, going left
-  [1, 8], [2, 8], [3, 8], [4, 8], [5, 8], [6, 8],
-  // Down col 6 rows 9-14
-  [6, 9], [6, 10], [6, 11], [6, 12], [6, 13], [6, 14],
-  // Yellow entry area: col 8 going up
-  [7, 14], [8, 14],
-  [8, 13], [8, 12], [8, 11], [8, 10], [8, 9], [8, 8],
-  // Cross row 8 going right
-  [9, 8], [10, 8], [11, 8], [12, 8], [13, 8], [14, 8],
-  // Blue entry area col 14 going up
-  [14, 7], [14, 6],
-  [13, 6], [12, 6], [11, 6], [10, 6], [9, 6], [8, 6],
-  // Cross row 6 going left back toward red
-  [8, 5], [8, 4], [8, 3], [8, 2], [8, 1], [8, 0],
-  // Back to top
-  [7, 0], [7, 1],
+  [6, 1], [6, 2], [6, 3], [6, 4], [6, 5],               // 0-4   red start, down col 6
+  [5, 6], [4, 6], [3, 6], [2, 6], [1, 6], [0, 6],       // 5-10  left along row 6
+  [0, 7], [0, 8],                                       // 11-12 green entry + corner
+  [1, 8], [2, 8], [3, 8], [4, 8], [5, 8],               // 13-17 green start, right along row 8
+  [6, 8],                                               // 18    corner (on ring)
+  [6, 9], [6, 10], [6, 11], [6, 12], [6, 13], [6, 14],  // 19-24 down col 6
+  [7, 14], [8, 14],                                     // 25-26 yellow entry + start
+  [8, 13], [8, 12], [8, 11], [8, 10], [8, 9],           // 27-31 up col 8
+  [8, 8],                                               // 32    corner (on ring)
+  [9, 8], [10, 8], [11, 8], [12, 8], [13, 8], [14, 8],  // 33-38 right along row 8
+  [14, 7], [14, 6],                                     // 39-40 blue entry + corner
+  [13, 6], [12, 6], [11, 6], [10, 6], [9, 6],           // 41-45 left along row 6
+  [8, 6],                                               // 46    corner (on ring)
+  [8, 5], [8, 4], [8, 3], [8, 2], [8, 1],               // 47-51 up col 8
+];
+
+// The one center-corner cell NOT on the ring (decorative only)
+export const CENTER_CORNER_CELLS: [number, number][] = [
+  [6, 6],
 ];
 
 // Home lane grid coordinates per color (6 squares, 0 = first inside, 5 = finish)
@@ -61,16 +66,22 @@ export function tokenScreenPos(token: Token): { x: number; y: number } {
   let row: number;
 
   if (token.status === "base") {
-    const slot = token.index;
-    [col, row] = BASE_GRID[token.color][slot];
+    [col, row] = BASE_GRID[token.color][token.index];
   } else if (token.status === "track") {
-    const absPos = (COLOR_ENTRY[token.color] + token.trackPos) % 52;
-    [col, row] = TRACK_GRID[absPos];
+    [col, row] = TRACK_GRID[token.trackPos];
   } else if (token.status === "home_lane") {
     [col, row] = HOME_LANE_GRID[token.color][token.trackPos];
   } else {
-    // finished — center of home
+    // finished — rest on the innermost home cell, nudged so stacked
+    // tokens stay visible
+    const nudge = [
+      [0, 0], [-0.15, 0.1], [0.15, 0.1], [0, -0.15],
+    ][token.index];
     [col, row] = HOME_LANE_GRID[token.color][5];
+    return {
+      x: (col + nudge[0]) * CELL + CELL / 2,
+      y: (row + nudge[1]) * CELL + CELL / 2,
+    };
   }
 
   return {
@@ -79,5 +90,5 @@ export function tokenScreenPos(token: Token): { x: number; y: number } {
   };
 }
 
-/** Returns the set of track squares visible as "safe" to the renderer */
+/** Returns the grid coordinate arrays for rendering */
 export { TRACK_GRID, HOME_LANE_GRID, BASE_GRID };

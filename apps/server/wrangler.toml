@@ -10,13 +10,11 @@ bindings = [
 
 [[migrations]]
 tag = "v1"
-new_classes = ["RoomDO"]
-
-[[d1_databases]]
-binding     = "DB"
-database_name = "ludo-arena-db"
-database_id   = "e0775307-dd1f-44f4-bb11-bc60d3f45b05"
-migrations_dir = "migrations"
+new_sqlite_classes = ["RoomDO"]
 
 [vars]
-ALLOWED_ORIGINS = "http://localhost:5173"
+ALLOWED_ORIGINS = "http://localhost:5173,https://ludo-arena-ad5.pages.dev"
+
+# Set these as secrets (never commit real values):
+# wrangler secret put SUPABASE_URL
+# wrangler secret put SUPABASE_SERVICE_KEY

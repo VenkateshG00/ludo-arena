@@ -1,27 +1,10 @@
-/**
- * D1 database service — match persistence.
- * All writes happen server-side only; D1 binding is never exposed to clients.
- */
-
+import { createClient } from "@supabase/supabase-js";
 import type { PlayerColor } from "@ludo/game-engine";
 
-export interface MatchRecord {
-  id: string;
-  room_code: string;
-  winner_color: PlayerColor;
-  player_count: number;
-  turn_count: number;
-  duration_ms: number;
-  created_at: number;
-}
-
-export interface MatchPlayerRecord {
-  match_id: string;
-  player_name: string;
-  color: PlayerColor;
-  seat_index: number;
-  is_winner: boolean;
-  tokens_finished: number;
+export function getSupabase(url: string, serviceKey: string) {
+  return createClient(url, serviceKey, {
+    auth: { persistSession: false },
+  });
 }
 
 export interface SaveMatchArgs {
@@ -35,147 +18,116 @@ export interface SaveMatchArgs {
     seatIndex: number;
     isWinner: boolean;
     tokensFinished: number;
+    userId?: string | null;
   }>;
 }
 
-export async function saveMatch(db: D1Database, args: SaveMatchArgs): Promise<string> {
+export async function saveMatch(url: string, serviceKey: string, args: SaveMatchArgs): Promise<void> {
+  const db = getSupabase(url, serviceKey);
   const id = crypto.randomUUID();
-  const now = Date.now();
 
-  await db.batch([
-    db.prepare(
-      `INSERT INTO matches (id, room_code, winner_color, player_count, turn_count, duration_ms, created_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`
-    ).bind(id, args.roomCode, args.winnerColor, args.players.length, args.turnCount, args.durationMs, now),
+  const { error: matchErr } = await db.from("matches").insert({
+    id,
+    room_code: args.roomCode,
+    winner_color: args.winnerColor,
+    player_count: args.players.length,
+    turn_count: args.turnCount,
+    duration_ms: args.durationMs,
+    created_at: Date.now(),
+  });
+  if (matchErr) throw matchErr;
 
-    ...args.players.map(p =>
-      db.prepare(
-        `INSERT INTO match_players (match_id, player_name, color, seat_index, is_winner, tokens_finished)
-         VALUES (?, ?, ?, ?, ?, ?)`
-      ).bind(id, p.name, p.color, p.seatIndex, p.isWinner ? 1 : 0, p.tokensFinished)
-    ),
+  const { error: playersErr } = await db.from("match_players").insert(
+    args.players.map(p => ({
+      match_id: id,
+      player_name: p.name,
+      color: p.color,
+      seat_index: p.seatIndex,
+      is_winner: p.isWinner,
+      tokens_finished: p.tokensFinished,
+      user_id: p.userId ?? null,
+    }))
+  );
+  if (playersErr) throw playersErr;
+}
+
+export async function getRecentMatches(url: string, serviceKey: string, limit = 20) {
+  const db = getSupabase(url, serviceKey);
+  const { data: matches, error } = await db
+    .from("matches")
+    .select(`id, room_code, winner_color, player_count, turn_count, duration_ms, created_at,
+             match_players(player_name, color, is_winner, tokens_finished)`)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return matches ?? [];
+}
+
+export async function getLeaderboard(url: string, serviceKey: string, limit = 10) {
+  const db = getSupabase(url, serviceKey);
+  const { data, error } = await db.rpc("get_leaderboard", { row_limit: limit });
+  if (error) throw error;
+  return data ?? [];
+}
+
+export async function getPlayerStats(url: string, serviceKey: string, playerName: string) {
+  const db = getSupabase(url, serviceKey);
+  const { data, error } = await db.rpc("get_player_stats", { p_name: playerName });
+  if (error) throw error;
+  return data?.[0] ?? null;
+}
+
+export async function getAdminStats(url: string, serviceKey: string) {
+  const db = getSupabase(url, serviceKey);
+
+  const [{ count: totalMatches }, { count: totalRooms }, { data: matchRows }] = await Promise.all([
+    db.from("matches").select("id", { count: "exact", head: true }),
+    db.from("matches").select("room_code", { count: "exact", head: true }),
+    db.from("matches").select("winner_color, duration_ms"),
   ]);
 
-  return id;
-}
+  const { data: playerRows, error: playerErr } = await db
+    .from("match_players")
+    .select("player_name");
+  if (playerErr) throw playerErr;
 
-export interface RecentMatch {
-  id: string;
-  room_code: string;
-  winner_color: string;
-  player_count: number;
-  turn_count: number;
-  duration_ms: number;
-  created_at: number;
-  players: Array<{
-    player_name: string;
-    color: string;
-    is_winner: boolean;
-    tokens_finished: number;
-  }>;
-}
+  const uniquePlayers = new Set((playerRows ?? []).map(p => p.player_name));
 
-export async function getRecentMatches(db: D1Database, limit = 20): Promise<RecentMatch[]> {
-  const { results: rows } = await db.prepare(
-    `SELECT m.id, m.room_code, m.winner_color, m.player_count, m.turn_count,
-            m.duration_ms, m.created_at,
-            mp.player_name, mp.color AS p_color, mp.is_winner, mp.tokens_finished
-     FROM matches m
-     JOIN match_players mp ON mp.match_id = m.id
-     ORDER BY m.created_at DESC
-     LIMIT ?`
-  ).bind(limit * 4).all<{
-    id: string; room_code: string; winner_color: string; player_count: number;
-    turn_count: number; duration_ms: number; created_at: number;
-    player_name: string; p_color: string; is_winner: number; tokens_finished: number;
-  }>();
+  const rows = matchRows ?? [];
+  const avgDuration = rows.length > 0
+    ? rows.reduce((sum, r) => sum + (r.duration_ms ?? 0), 0) / rows.length
+    : 0;
 
-  // Group by match id
-  const map = new Map<string, RecentMatch>();
-  for (const row of rows) {
-    if (!map.has(row.id)) {
-      map.set(row.id, {
-        id: row.id,
-        room_code: row.room_code,
-        winner_color: row.winner_color,
-        player_count: row.player_count,
-        turn_count: row.turn_count,
-        duration_ms: row.duration_ms,
-        created_at: row.created_at,
-        players: [],
-      });
-    }
-    map.get(row.id)!.players.push({
-      player_name: row.player_name,
-      color: row.p_color,
-      is_winner: row.is_winner === 1,
-      tokens_finished: row.tokens_finished,
-    });
+  const winnerCounts: Record<string, number> = {};
+  for (const r of rows) {
+    winnerCounts[r.winner_color] = (winnerCounts[r.winner_color] ?? 0) + 1;
   }
-
-  return [...map.values()].slice(0, limit);
-}
-
-export interface PlayerStats {
-  player_name: string;
-  matches_played: number;
-  wins: number;
-  win_rate: number;
-  avg_tokens_finished: number;
-}
-
-export async function getPlayerStats(db: D1Database, playerName: string): Promise<PlayerStats | null> {
-  const row = await db.prepare(
-    `SELECT
-       mp.player_name,
-       COUNT(*) AS matches_played,
-       SUM(mp.is_winner) AS wins,
-       AVG(mp.tokens_finished) AS avg_tokens_finished
-     FROM match_players mp
-     WHERE mp.player_name = ?
-     GROUP BY mp.player_name`
-  ).bind(playerName).first<{
-    player_name: string;
-    matches_played: number;
-    wins: number;
-    avg_tokens_finished: number;
-  }>();
-
-  if (!row) return null;
+  const mostCommonWinner = Object.entries(winnerCounts).sort((a, b) => b[1] - a[1])[0]?.[0] ?? "";
 
   return {
-    player_name: row.player_name,
-    matches_played: row.matches_played,
-    wins: row.wins,
-    win_rate: row.matches_played > 0 ? row.wins / row.matches_played : 0,
-    avg_tokens_finished: row.avg_tokens_finished,
+    total_matches: totalMatches ?? 0,
+    total_players: uniquePlayers.size,
+    total_rooms_created: totalRooms ?? 0,
+    avg_match_duration_ms: Math.round(avgDuration),
+    most_common_winner: mostCommonWinner,
   };
 }
 
-export async function getLeaderboard(db: D1Database, limit = 10): Promise<PlayerStats[]> {
-  const { results } = await db.prepare(
-    `SELECT
-       mp.player_name,
-       COUNT(*) AS matches_played,
-       SUM(mp.is_winner) AS wins,
-       AVG(mp.tokens_finished) AS avg_tokens_finished
-     FROM match_players mp
-     GROUP BY mp.player_name
-     HAVING matches_played >= 3
-     ORDER BY wins DESC, avg_tokens_finished DESC
-     LIMIT ?`
-  ).bind(limit).all<{
-    player_name: string;
-    matches_played: number;
-    wins: number;
-    avg_tokens_finished: number;
-  }>();
+export async function getAllMatches(url: string, serviceKey: string, limit = 50) {
+  const db = getSupabase(url, serviceKey);
+  const { data, error } = await db
+    .from("matches")
+    .select(`id, room_code, winner_color, player_count, turn_count, duration_ms, created_at,
+             match_players(player_name, color, is_winner, tokens_finished)`)
+    .order("created_at", { ascending: false })
+    .limit(limit);
+  if (error) throw error;
+  return data ?? [];
+}
 
-  return results.map(r => ({
-    player_name: r.player_name,
-    matches_played: r.matches_played,
-    wins: r.wins,
-    win_rate: r.matches_played > 0 ? r.wins / r.matches_played : 0,
-    avg_tokens_finished: r.avg_tokens_finished,
-  }));
+export async function getAllPlayers(url: string, serviceKey: string) {
+  const db = getSupabase(url, serviceKey);
+  const { data, error } = await db.rpc("get_leaderboard", { row_limit: 100 });
+  if (error) throw error;
+  return data ?? [];
 }

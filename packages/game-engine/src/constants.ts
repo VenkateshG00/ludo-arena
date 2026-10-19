@@ -10,21 +10,21 @@ export const COLOR_ENTRY: Record<PlayerColor, number> = {
   red:    0,
   green:  13,
   yellow: 26,
-  blue:   39,
+  blue:   38,
 };
 
 // Where each color's home lane starts (the square before the colored home lane)
 // A token with trackPos === HOME_LANE_ENTRY[color] can enter the home lane
 export const HOME_LANE_ENTRY: Record<PlayerColor, number> = {
   red:    51,
-  green:  12,
+  green:  11,
   yellow: 25,
-  blue:   38,
+  blue:   39,
 };
 
 // Safe squares on the main track (cannot be captured here)
 export const SAFE_SQUARES: Set<number> = new Set([
-  0, 8, 13, 21, 26, 34, 39, 47,
+  0, 8, 13, 21, 26, 34, 38, 47,
 ]);
 
 // Star squares (grant extra roll on landing, not home lane entry)

@@ -3,7 +3,7 @@
  * Never mutates state optimistically — waits for server confirmation.
  */
 
-import type { GameState, PlayerColor } from "@ludo/game-engine";
+import type { GameState, PlayerColor, GamePhase } from "@ludo/game-engine";
 import type { RoomPlayer } from "./types";
 
 export type GamePhaseUI =
@@ -18,6 +18,7 @@ export interface RoomInfo {
   roomId: string;
   roomCode: string;
   hostId: string;
+  phase: GamePhase;
   players: RoomPlayer[];
 }
 
@@ -51,7 +52,7 @@ export type Action =
   | { type: "SET_CONNECTING" }
   | { type: "SET_WS_CONNECTED" }
   | { type: "SET_CREDENTIALS"; playerId: string; reconnectToken: string }
-  | { type: "ROOM_UPDATED"; roomInfo: RoomInfo }
+  | { type: "ROOM_UPDATED"; roomInfo: RoomInfo; phase?: GamePhase }
   | { type: "GAME_STARTED"; game: GameState }
   | { type: "GAME_STATE"; game: GameState }
   | { type: "GAME_FINISHED"; game: GameState; winner: PlayerColor }
@@ -72,12 +73,30 @@ export function clientReducer(state: ClientState, action: Action): ClientState {
     case "SET_CREDENTIALS":
       return { ...state, myPlayerId: action.playerId, myReconnectToken: action.reconnectToken };
 
-    case "ROOM_UPDATED":
+    case "ROOM_UPDATED": {
+      // Use server-provided phase; map engine-only phases to UI phases.
+      // "waiting"/"starting" both mean lobby from the client's perspective.
+      let nextPhase: GamePhaseUI;
+      if (action.phase === "playing" || action.phase === "finished") {
+        nextPhase = action.phase;
+      } else if (action.phase) {
+        // "lobby", "waiting", or "starting" → lobby
+        nextPhase = "lobby";
+      } else {
+        // No phase provided — only flip to lobby if not already in a game
+        nextPhase =
+          action.roomInfo.players.length > 0 &&
+          state.phase !== "playing" &&
+          state.phase !== "finished"
+            ? "lobby"
+            : state.phase;
+      }
       return {
         ...state,
         roomInfo: action.roomInfo,
-        phase: action.roomInfo.players.length > 0 ? "lobby" : state.phase,
+        phase: nextPhase,
       };
+    }
 
     case "GAME_STARTED":
       return { ...state, game: action.game, phase: "playing", disconnectedPlayers: new Set() };

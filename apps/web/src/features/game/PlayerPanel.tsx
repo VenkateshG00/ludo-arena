@@ -1,12 +1,6 @@
 import React from "react";
-import type { Player, PlayerColor } from "@ludo/game-engine";
-
-const COLOR_HEX: Record<PlayerColor, string> = {
-  red:    "#E63946",
-  green:  "#2DC653",
-  yellow: "#FFBE0B",
-  blue:   "#4361EE",
-};
+import type { Player } from "@ludo/game-engine";
+import { COLOR_HEX } from "../../shared/constants";
 
 interface PlayerPanelProps {
   players: Player[];

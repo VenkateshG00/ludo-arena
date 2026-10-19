@@ -23,6 +23,7 @@ import { saveMatch } from "./db";
 
 interface Seat {
   playerId: string;
+  userId: string | null;
   name: string;
   color: PlayerColor;
   seatIndex: number;
@@ -47,6 +48,25 @@ interface RoomMeta {
 interface SocketMeta {
   playerId: string;
   roomId: string;
+}
+
+// WS message rate limit: max messages per second per socket
+const WS_RATE_LIMIT = 10;
+const WS_RATE_WINDOW_MS = 1000;
+
+// Per-player message counters (in-memory, resets on hibernation — acceptable)
+const wsMessageCounts = new Map<string, { count: number; windowStart: number }>();
+
+function checkWsRateLimit(playerId: string): boolean {
+  const now = Date.now();
+  const entry = wsMessageCounts.get(playerId);
+  if (!entry || now - entry.windowStart > WS_RATE_WINDOW_MS) {
+    wsMessageCounts.set(playerId, { count: 1, windowStart: now });
+    return true;
+  }
+  if (entry.count >= WS_RATE_LIMIT) return false;
+  entry.count++;
+  return true;
 }
 
 type Msg =
@@ -114,7 +134,7 @@ export class RoomDO {
   // ── Join room (new player joining an existing lobby) ─────────────────────────
 
   private async handleJoin(request: Request): Promise<Response> {
-    const body = await request.json<{ playerName: string }>();
+    const body = await request.json<{ playerName: string; userId?: string }>();
     if (!this.meta) return Response.json({ error: "room_not_found" }, { status: 404 });
     if (this.meta.phase !== "lobby") return Response.json({ error: "game_in_progress", message: "Game already started" }, { status: 409 });
 
@@ -129,6 +149,7 @@ export class RoomDO {
     const reconnectToken = generateToken();
     const seat: Seat = {
       playerId,
+      userId: body.userId ?? null,
       name: body.playerName.slice(0, 20).trim(),
       color: COLORS[seatIndex] as PlayerColor,
       seatIndex,
@@ -146,7 +167,7 @@ export class RoomDO {
   // ── Room creation (called once by the worker before WS upgrade) ──────────────
 
   private async handleCreate(request: Request): Promise<Response> {
-    const body = await request.json<{ roomId: string; roomCode: string; hostPlayerName: string; config?: Partial<RoomConfig> }>();
+    const body = await request.json<{ roomId: string; roomCode: string; hostPlayerName: string; userId?: string; config?: Partial<RoomConfig> }>();
 
     if (this.meta) return Response.json({ error: "already_created" }, { status: 400 });
 
@@ -166,6 +187,7 @@ export class RoomDO {
 
     const hostSeat: Seat = {
       playerId: hostId,
+      userId: body.userId ?? null,
       name: body.hostPlayerName,
       color: "red",
       seatIndex: 0,
@@ -209,11 +231,10 @@ export class RoomDO {
 
     this.state.acceptWebSocket(server, [playerId]);
 
+    const wasDisconnected = !seat.connected;
     seat.connected = true;
     seat.disconnectedAt = null;
     this.meta.lastActivityAt = Date.now();
-
-    const wasDisconnected = !seat.connected;
     await this.persist();
 
     if (wasDisconnected && this.gameState) {
@@ -232,11 +253,15 @@ export class RoomDO {
   // ── WebSocket event handlers (CF hibernation API) ────────────────────────────
 
   async webSocketMessage(ws: WebSocket, message: string | ArrayBuffer): Promise<void> {
+    await this.hydrate();
     const tags = this.state.getTags(ws);
     const playerId = tags[0];
     if (!playerId || !this.meta) return;
 
-    await this.hydrate();
+    if (!checkWsRateLimit(playerId)) {
+      this.sendTo(ws, { type: "action_rejected", reason: "Too many messages", code: "RATE_LIMITED" });
+      return;
+    }
 
     let msg: Msg;
     try {
@@ -252,11 +277,10 @@ export class RoomDO {
   }
 
   async webSocketClose(ws: WebSocket, code: number): Promise<void> {
+    await this.hydrate();
     const tags = this.state.getTags(ws);
     const playerId = tags[0];
     if (!playerId || !this.meta) return;
-
-    await this.hydrate();
 
     const seat = this.seats.get(playerId);
     if (!seat) return;
@@ -319,14 +343,30 @@ export class RoomDO {
   private async handleMessage(ws: WebSocket, playerId: string, msg: Msg): Promise<void> {
     if (!this.meta) return;
 
+    // Basic payload shape validation
     switch (msg.type) {
       case "set_ready":
+        if (typeof msg.ready !== "boolean") {
+          this.sendTo(ws, { type: "action_rejected", reason: "Invalid payload", code: "BAD_PAYLOAD" });
+          return;
+        }
         return this.handleSetReady(ws, playerId, msg.ready);
       case "start_game":
         return this.handleStartGame(ws, playerId);
       case "roll_dice":
+        if (typeof msg.actionSeq !== "number" || !Number.isInteger(msg.actionSeq) || msg.actionSeq < 0) {
+          this.sendTo(ws, { type: "action_rejected", reason: "Invalid payload", code: "BAD_PAYLOAD" });
+          return;
+        }
         return this.handleRollDice(ws, playerId, msg.actionSeq);
       case "move_token":
+        if (
+          typeof msg.tokenId !== "string" || msg.tokenId.length > 20 ||
+          typeof msg.actionSeq !== "number" || !Number.isInteger(msg.actionSeq) || msg.actionSeq < 0
+        ) {
+          this.sendTo(ws, { type: "action_rejected", reason: "Invalid payload", code: "BAD_PAYLOAD" });
+          return;
+        }
         return this.handleMoveToken(ws, playerId, msg.tokenId, msg.actionSeq);
       case "request_state":
         return this.handleRequestState(ws, playerId);
@@ -453,8 +493,8 @@ export class RoomDO {
     if (this.gameState.phase === "finished") {
       this.meta.phase = "finished";
       this.broadcast({ type: "game_finished", state: this.gameState, winner: this.gameState.winner! });
-      // Persist match to D1 (fire-and-forget — don't block the WS response)
-      this.persistMatchToD1(this.gameState).catch(() => { /* non-critical */ });
+      // Persist match to Supabase (fire-and-forget — don't block the WS response)
+      this.persistMatchToSupabase(this.gameState).catch(() => { /* non-critical */ });
     } else if (this.gameState.activePlayerIndex !== prev.activePlayerIndex) {
       this.broadcast({ type: "turn_changed", state: this.gameState });
     }
@@ -486,15 +526,21 @@ export class RoomDO {
     this.broadcast({ type: "room_updated", ...this.roomSnapshot() });
   }
 
-  // ── D1 persistence ───────────────────────────────────────────────────────────
+  // ── Supabase persistence ─────────────────────────────────────────────────────
 
-  private async persistMatchToD1(game: GameState): Promise<void> {
-    if (!this.meta || !this.env.DB) return;
+  private async persistMatchToSupabase(game: GameState): Promise<void> {
+    if (!this.meta || !this.env.SUPABASE_URL || !this.env.SUPABASE_SERVICE_KEY) return;
     const durationMs = this.meta.gameStartedAt
       ? Date.now() - this.meta.gameStartedAt
       : 0;
 
-    await saveMatch(this.env.DB, {
+    // Build player list with user_id from seats
+    const seatByColor = new Map<string, Seat>();
+    for (const seat of this.seats.values()) {
+      seatByColor.set(seat.color, seat);
+    }
+
+    await saveMatch(this.env.SUPABASE_URL, this.env.SUPABASE_SERVICE_KEY, {
       roomCode: this.meta.roomCode,
       winnerColor: game.winner!,
       turnCount: game.turnNumber,
@@ -505,6 +551,7 @@ export class RoomDO {
         seatIndex: p.seatIndex,
         isWinner: p.color === game.winner,
         tokensFinished: p.tokens.filter(t => t.status === "finished").length,
+        userId: seatByColor.get(p.color)?.userId ?? null,
       })),
     });
   }
@@ -542,10 +589,11 @@ export class RoomDO {
 
   private async hydrate(): Promise<void> {
     if (this.meta) return; // already loaded
-    const [meta, seatsData, gsData] = await Promise.all([
+    const [meta, seatsData, gsData, seqData] = await Promise.all([
       this.state.storage.get<RoomMeta>("meta"),
       this.state.storage.get<Seat[]>("seats"),
       this.state.storage.get<GameState>("gameState"),
+      this.state.storage.get<[string, number][]>("lastActionSeq"),
     ]);
     if (meta) this.meta = meta;
     if (seatsData) {
@@ -553,6 +601,10 @@ export class RoomDO {
       for (const s of seatsData) this.seats.set(s.playerId, s);
     }
     if (gsData) this.gameState = gsData;
+    if (seqData) {
+      this.lastActionSeq.clear();
+      for (const [k, v] of seqData) this.lastActionSeq.set(k, v);
+    }
   }
 
   private async persist(): Promise<void> {
@@ -561,6 +613,7 @@ export class RoomDO {
       this.state.storage.put("meta", this.meta),
       this.state.storage.put("seats", [...this.seats.values()]),
       this.gameState ? this.state.storage.put("gameState", this.gameState) : Promise.resolve(),
+      this.state.storage.put("lastActionSeq", [...this.lastActionSeq.entries()]),
     ]);
   }
 }
@@ -587,6 +640,8 @@ function generateToken(): string {
 
 export interface Env {
   ROOM: DurableObjectNamespace;
-  DB: D1Database;
+  SUPABASE_URL: string;
+  SUPABASE_SERVICE_KEY: string;
   ALLOWED_ORIGINS: string;
+  ADMIN_KEY: string;
 }

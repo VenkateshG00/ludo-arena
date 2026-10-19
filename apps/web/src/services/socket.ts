@@ -42,12 +42,13 @@ export type ServerMsgHandler = (msg: ServerMsg) => void;
 // ── REST helpers ──────────────────────────────────────────────────────────────
 
 export async function apiCreateRoom(
-  playerName: string
+  playerName: string,
+  userId?: string | null
 ): Promise<{ roomId: string; roomCode: string; playerId: string; reconnectToken: string }> {
   const res = await fetch(`${SERVER_URL}/api/rooms`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ playerName }),
+    body: JSON.stringify({ playerName, userId: userId ?? undefined }),
   });
   if (!res.ok) {
     const err = await res.json() as { error: string; message?: string };
@@ -58,12 +59,13 @@ export async function apiCreateRoom(
 
 export async function apiJoinRoom(
   roomCode: string,
-  playerName: string
+  playerName: string,
+  userId?: string | null
 ): Promise<{ roomId: string; roomCode: string; playerId: string; reconnectToken: string }> {
   const res = await fetch(`${SERVER_URL}/api/rooms/join`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ roomCode, playerName }),
+    body: JSON.stringify({ roomCode, playerName, userId: userId ?? undefined }),
   });
   if (!res.ok) {
     const err = await res.json() as { error: string; message?: string };

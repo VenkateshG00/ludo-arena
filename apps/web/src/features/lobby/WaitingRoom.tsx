@@ -1,14 +1,13 @@
 import React, { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useGame } from "../game/GameContext";
-
-const COLOR_HEX: Record<string, string> = {
-  red: "#E63946", green: "#2DC653", yellow: "#FFBE0B", blue: "#4361EE",
-};
+import { COLOR_HEX } from "../../shared/constants";
 
 export function WaitingRoom() {
   const { state, setReady, startGame, leaveRoom } = useGame();
   const { roomInfo, myPlayerId } = state;
   const [copied, setCopied] = useState(false);
+  const navigate = useNavigate();
 
   if (!roomInfo) return null;
 
@@ -23,7 +22,6 @@ export function WaitingRoom() {
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     } catch {
-      // Fallback: select the text
       const el = document.getElementById("room-code-text");
       if (el) {
         const range = document.createRange();
@@ -34,13 +32,18 @@ export function WaitingRoom() {
     }
   };
 
+  const handleLeave = () => {
+    leaveRoom();
+    navigate("/");
+  };
+
   return (
-    <div className="min-h-screen flex flex-col items-center justify-center bg-ludo-dark px-4 py-8">
+    <div className="flex-1 flex flex-col items-center justify-center px-4 py-8">
       <div className="w-full max-w-md">
         {/* Header */}
         <div className="text-center mb-6">
-          <h1 className="font-display text-3xl text-yellow-400">Waiting Room</h1>
-          <p className="text-white/50 text-sm mt-1">Share the code with friends to join</p>
+          <h1 className="font-display text-3xl text-yellow-400 mb-1">Waiting Room</h1>
+          <p className="text-white/50 text-sm">Share the code with friends to join</p>
         </div>
 
         {/* Room code */}
@@ -57,7 +60,6 @@ export function WaitingRoom() {
           <div
             id="room-code-text"
             className="font-mono font-bold text-4xl text-yellow-400 tracking-[0.3em] text-center py-2 select-all"
-            title="Room code"
           >
             {roomInfo.roomCode}
           </div>
@@ -71,24 +73,23 @@ export function WaitingRoom() {
           </div>
           <div className="flex flex-col gap-2">
             {roomInfo.players.map(player => (
-              <div key={player.id} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-white/5">
+              <div key={player.id} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white/5">
                 <div
                   className="w-4 h-4 rounded-full flex-shrink-0"
-                  style={{ background: COLOR_HEX[player.color] }}
+                  style={{ background: COLOR_HEX[player.color as keyof typeof COLOR_HEX] }}
                 />
                 <span className="font-bold flex-1">
                   {player.name}
                   {player.id === myPlayerId && <span className="text-white/40 text-xs font-normal ml-1">(you)</span>}
                   {player.id === roomInfo.hostId && <span className="text-yellow-400 text-xs ml-1">👑</span>}
                 </span>
-                <span className={`text-xs font-bold px-2 py-0.5 rounded-full ${player.ready ? "bg-green-500/20 text-green-400" : "bg-white/10 text-white/40"}`}>
+                <span className={`text-xs font-bold px-2.5 py-0.5 rounded-full ${player.ready ? "bg-green-500/20 text-green-400" : "bg-white/10 text-white/40"}`}>
                   {player.ready ? "Ready" : "Not ready"}
                 </span>
               </div>
             ))}
-            {/* Empty seats */}
             {Array.from({ length: 4 - roomInfo.players.length }, (_, i) => (
-              <div key={`empty_${i}`} className="flex items-center gap-3 px-3 py-2 rounded-xl bg-white/5 opacity-30">
+              <div key={`empty_${i}`} className="flex items-center gap-3 px-3 py-2.5 rounded-xl bg-white/5 opacity-30">
                 <div className="w-4 h-4 rounded-full bg-white/20 flex-shrink-0" />
                 <span className="text-white/40 text-sm">Waiting for player…</span>
               </div>
@@ -101,7 +102,7 @@ export function WaitingRoom() {
           {me && !me.ready && (
             <button
               onClick={() => setReady(true)}
-              className="w-full py-3 rounded-xl bg-green-500 text-white font-bold text-lg hover:bg-green-400 transition active:scale-95"
+              className="w-full py-3 rounded-xl bg-green-500 text-white font-bold text-lg hover:bg-green-400 transition active:scale-95 shadow-lg shadow-green-500/20"
             >
               Ready!
             </button>
@@ -117,7 +118,7 @@ export function WaitingRoom() {
           {isHost && allReady && (
             <button
               onClick={startGame}
-              className="w-full py-3 rounded-xl bg-yellow-400 text-ludo-dark font-bold text-lg hover:bg-yellow-300 transition active:scale-95"
+              className="w-full py-3 rounded-xl bg-yellow-400 text-ludo-dark font-bold text-lg hover:bg-yellow-300 transition active:scale-95 shadow-lg shadow-yellow-400/20"
             >
               Start Game!
             </button>
@@ -128,7 +129,7 @@ export function WaitingRoom() {
             </p>
           )}
           <button
-            onClick={leaveRoom}
+            onClick={handleLeave}
             className="w-full py-2 rounded-xl bg-transparent text-white/40 font-bold text-sm hover:text-white/70 transition"
           >
             Leave Room

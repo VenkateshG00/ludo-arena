@@ -10,29 +10,18 @@ import {
   tokenScreenPos,
   COLOR_ENTRY,
 } from "@ludo/game-engine";
-
-const COLOR_HEX: Record<PlayerColor, string> = {
-  red:    "#E63946",
-  green:  "#2DC653",
-  yellow: "#FFBE0B",
-  blue:   "#4361EE",
-};
-
-const COLOR_LIGHT: Record<PlayerColor, string> = {
-  red:    "#fde8ea",
-  green:  "#e0f7e9",
-  yellow: "#fff8e0",
-  blue:   "#e8edff",
-};
+import { COLOR_HEX, COLOR_LIGHT } from "../../shared/constants";
 
 interface BoardProps {
   game: GameState;
   myPlayerId: string | null;
   onTokenClick: (tokenId: string) => void;
   legalTokenIds: Set<string>;
+  hiddenTokens?: Set<string>;
+  animationLayer?: React.ReactNode;
 }
 
-export function Board({ game, myPlayerId, onTokenClick, legalTokenIds }: BoardProps) {
+export function Board({ game, myPlayerId, onTokenClick, legalTokenIds, hiddenTokens, animationLayer }: BoardProps) {
   const activePlayer = game.players[game.activePlayerIndex];
 
   return (
@@ -55,6 +44,7 @@ export function Board({ game, myPlayerId, onTokenClick, legalTokenIds }: BoardPr
       {/* Tokens */}
       {game.players.flatMap(player =>
         player.tokens.map(token => {
+          if (hiddenTokens?.has(token.id)) return null;
           const pos = tokenScreenPos(token);
           const isLegal = legalTokenIds.has(token.id);
           const isMine = player.id === myPlayerId;
@@ -71,6 +61,9 @@ export function Board({ game, myPlayerId, onTokenClick, legalTokenIds }: BoardPr
           );
         })
       )}
+
+      {/* Animation overlay layer */}
+      {animationLayer}
     </svg>
   );
 }

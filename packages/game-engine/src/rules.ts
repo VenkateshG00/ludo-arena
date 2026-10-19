@@ -82,7 +82,7 @@ export function applyRoll(state: GameState, value: number, seq: number): GameSta
   }
 
   const newDice = { value, rolledAt: Date.now(), rollCount, used: false };
-  const moves = computeLegalMoves(state.players[state.activePlayerIndex], state.players, value);
+  const moves = computeLegalMoves(state.players[state.activePlayerIndex], state.players, value, state.config);
 
   // No legal moves: auto-advance turn (unless it's a 6, which grants re-roll)
   if (moves.length === 0 && value !== 6) {
@@ -97,12 +97,13 @@ export function applyRoll(state: GameState, value: number, seq: number): GameSta
 export function computeLegalMoves(
   activePlayer: Player,
   allPlayers: Player[],
-  diceValue: number
+  diceValue: number,
+  config: RoomConfig = DEFAULT_CONFIG
 ): LegalMove[] {
   const moves: LegalMove[] = [];
 
   for (const token of activePlayer.tokens) {
-    const move = computeTokenMove(token, activePlayer.color, allPlayers, diceValue);
+    const move = computeTokenMove(token, activePlayer.color, allPlayers, diceValue, config);
     if (move) moves.push(move);
   }
 
@@ -113,78 +114,44 @@ function computeTokenMove(
   token: Token,
   color: PlayerColor,
   allPlayers: Player[],
-  diceValue: number
+  diceValue: number,
+  config: RoomConfig
 ): LegalMove | null {
   if (token.status === "finished") return null;
 
   if (token.status === "base") {
     if (diceValue !== 6) return null;
-    // Check if entry square is blocked by own token (blockRule)
-    const entryOccupants = getOccupantsAt(allPlayers, "track", 0);
-    const ownBlock = entryOccupants.filter(t => t.color === color);
-    // Entry is always allowed (own token simply stacks — no block rule for entry)
-    const captures = entryOccupants
-      .filter(t => t.color !== color && !SAFE_SQUARES.has(0))
-      .map(t => t.id);
+    // Base exit always lands on this color's own start square (absolute pos).
+    // Start squares are safe — no capture on entry.
     return {
       tokenId: token.id,
       fromStatus: "base",
       fromPos: -1,
       toStatus: "track",
-      toPos: 0,
-      captures,
+      toPos: COLOR_ENTRY[color],
+      captures: [],
     };
   }
 
   if (token.status === "track") {
-    const remaining = stepsToHomeLane(token.trackPos, color);
+    // Steps to enter home lane = steps to reach the home-entry square, plus 1
+    // step from that square into the lane.
+    const stepsToLane = stepsToHomeLane(token.trackPos, color);
 
-    if (diceValue <= remaining) {
-      // Still on track or entering home lane
-      const newTrackPos = token.trackPos + diceValue;
-      if (newTrackPos === remaining && remaining < HOME_LANE_LENGTH) {
-        // Enter home lane
-        const homeLanePos = newTrackPos - remaining; // always 0
-        return {
-          tokenId: token.id,
-          fromStatus: "track",
-          fromPos: token.trackPos,
-          toStatus: "home_lane",
-          toPos: 0,
-          captures: [],
-        };
-      }
-
-      // Steps until home lane entry
-      const stepsUntilEntry = stepsToHomeLane(token.trackPos, color);
-      if (diceValue > stepsUntilEntry) return null; // overshoot
-
-      const absNewPos = (token.trackPos + diceValue) % TOTAL_TRACK_SQUARES;
-
-      // Would pass home-lane entry?
-      if (wouldPassHomeEntry(token.trackPos, diceValue, color)) {
-        const homeLanePos = diceValue - stepsUntilEntry - 1;
-        if (homeLanePos < HOME_LANE_LENGTH) {
-          const captures: string[] = [];
-          return {
-            tokenId: token.id,
-            fromStatus: "track",
-            fromPos: token.trackPos,
-            toStatus: "home_lane",
-            toPos: homeLanePos,
-            captures,
-          };
-        }
-        return null;
-      }
-
+    if (diceValue < stepsToLane) {
+      // Ordinary track move
       const dest = (token.trackPos + diceValue) % TOTAL_TRACK_SQUARES;
       const isSafe = SAFE_SQUARES.has(dest);
       const occupants = getOccupantsAt(allPlayers, "track", dest);
-      const ownBlock = occupants.filter(t => t.color === color);
 
-      // Blocked by 2+ own tokens (block rule)
-      if (ownBlock.length >= 2) return null;
+      // Block rule: a square occupied by 2+ of one color is impassable
+      if (config.blockRule) {
+        const byColor = new Map<PlayerColor, number>();
+        for (const t of occupants) {
+          byColor.set(t.color, (byColor.get(t.color) ?? 0) + 1);
+        }
+        if ((byColor.get(color) ?? 0) >= 2) return null;
+      }
 
       const captures = isSafe
         ? []
@@ -199,7 +166,20 @@ function computeTokenMove(
         captures,
       };
     }
-    return null;
+
+    if (diceValue === stepsToLane) {
+      // Exact count enters the home lane
+      return {
+        tokenId: token.id,
+        fromStatus: "track",
+        fromPos: token.trackPos,
+        toStatus: "home_lane",
+        toPos: 0,
+        captures: [],
+      };
+    }
+
+    return null; // would overshoot the home-lane entry
   }
 
   if (token.status === "home_lane") {
@@ -231,21 +211,14 @@ function computeTokenMove(
   return null;
 }
 
-// How many more track steps until reaching home-lane entry
+/**
+ * Steps from a track square to entering the home lane (landing on lane pos 0).
+ * trackPos and HOME_LANE_ENTRY are absolute ring positions (0-51).
+ * A token standing on the home-entry square needs exactly 1 to enter the lane.
+ */
 function stepsToHomeLane(trackPos: number, color: PlayerColor): number {
   const entry = HOME_LANE_ENTRY[color];
-  if (trackPos <= entry) return entry - trackPos;
-  return TOTAL_TRACK_SQUARES - trackPos + entry;
-}
-
-function wouldPassHomeEntry(trackPos: number, steps: number, color: PlayerColor): boolean {
-  const entry = HOME_LANE_ENTRY[color];
-  let pos = trackPos;
-  for (let i = 0; i < steps; i++) {
-    pos = (pos + 1) % TOTAL_TRACK_SQUARES;
-    if (pos === (entry + 1) % TOTAL_TRACK_SQUARES) return true;
-  }
-  return false;
+  return ((entry - trackPos + TOTAL_TRACK_SQUARES) % TOTAL_TRACK_SQUARES) + 1;
 }
 
 function getOccupantsAt(

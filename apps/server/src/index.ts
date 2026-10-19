@@ -5,7 +5,7 @@
 
 export { RoomDO } from "./room";
 import type { Env } from "./room";
-import { getRecentMatches, getPlayerStats, getLeaderboard } from "./db";
+import { getRecentMatches, getPlayerStats, getLeaderboard, getAdminStats, getAllMatches, getAllPlayers } from "./db";
 
 // Rate limit: track room creation per IP (simple in-memory, resets on worker restart)
 const roomCreationCounts = new Map<string, { count: number; resetAt: number }>();
@@ -22,7 +22,7 @@ export default {
       ? {
           "Access-Control-Allow-Origin": origin || "*",
           "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
-          "Access-Control-Allow-Headers": "Content-Type",
+          "Access-Control-Allow-Headers": "Content-Type, X-Admin-Key",
           "Access-Control-Allow-Credentials": "true",
         }
       : {};
@@ -55,14 +55,14 @@ export default {
     // Recent matches
     if (url.pathname === "/api/matches" && request.method === "GET") {
       const limit = Math.min(Number(url.searchParams.get("limit") ?? "20"), 50);
-      const matches = await getRecentMatches(env.DB, limit);
+      const matches = await getRecentMatches(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY, limit);
       return Response.json(matches, { headers: corsHeaders });
     }
 
     // Leaderboard
     if (url.pathname === "/api/leaderboard" && request.method === "GET") {
       const limit = Math.min(Number(url.searchParams.get("limit") ?? "10"), 50);
-      const board = await getLeaderboard(env.DB, limit);
+      const board = await getLeaderboard(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY, limit);
       return Response.json(board, { headers: corsHeaders });
     }
 
@@ -70,9 +70,45 @@ export default {
     if (url.pathname.startsWith("/api/players/") && request.method === "GET") {
       const playerName = decodeURIComponent(url.pathname.slice("/api/players/".length));
       if (!playerName) return Response.json({ error: "missing_name" }, { status: 400, headers: corsHeaders });
-      const stats = await getPlayerStats(env.DB, playerName);
+      const stats = await getPlayerStats(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY, playerName);
       if (!stats) return Response.json({ error: "not_found" }, { status: 404, headers: corsHeaders });
       return Response.json(stats, { headers: corsHeaders });
+    }
+
+    // Admin endpoints
+    if (url.pathname.startsWith("/api/admin/")) {
+      const adminKey = request.headers.get("X-Admin-Key") ?? "";
+      if (!env.ADMIN_KEY || adminKey !== env.ADMIN_KEY) {
+        return Response.json({ error: "unauthorized" }, { status: 401, headers: corsHeaders });
+      }
+
+      if (url.pathname === "/api/admin/stats" && request.method === "GET") {
+        try {
+          const stats = await getAdminStats(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY);
+          return Response.json(stats, { headers: corsHeaders });
+        } catch {
+          return Response.json({ error: "db_error" }, { status: 500, headers: corsHeaders });
+        }
+      }
+
+      if (url.pathname === "/api/admin/matches" && request.method === "GET") {
+        const limit = Math.min(Number(url.searchParams.get("limit") ?? "50"), 200);
+        try {
+          const matches = await getAllMatches(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY, limit);
+          return Response.json(matches, { headers: corsHeaders });
+        } catch {
+          return Response.json({ error: "db_error" }, { status: 500, headers: corsHeaders });
+        }
+      }
+
+      if (url.pathname === "/api/admin/players" && request.method === "GET") {
+        try {
+          const players = await getAllPlayers(env.SUPABASE_URL, env.SUPABASE_SERVICE_KEY);
+          return Response.json(players, { headers: corsHeaders });
+        } catch {
+          return Response.json({ error: "db_error" }, { status: 500, headers: corsHeaders });
+        }
+      }
     }
 
     // WebSocket upgrade for a room

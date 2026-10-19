@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useReducer, useRef, useCallback, useEffect } from "react";
 import { clientReducer, initialClientState, type ClientState, type Action } from "./store";
 import { GameSocket, apiCreateRoom, apiJoinRoom, type ServerMsg } from "../../services/socket";
+import { supabase } from "../../services/supabase";
 
 interface GameContextValue {
   state: ClientState;
@@ -16,6 +17,30 @@ interface GameContextValue {
 
 const GameContext = createContext<GameContextValue | null>(null);
 
+const CRED_KEY = "ludo_arena_credentials";
+
+interface StoredCreds {
+  roomId: string;
+  roomCode: string;
+  playerId: string;
+  reconnectToken: string;
+}
+
+function saveCreds(creds: StoredCreds) {
+  try { sessionStorage.setItem(CRED_KEY, JSON.stringify(creds)); } catch { /* private mode */ }
+}
+
+function loadCreds(): StoredCreds | null {
+  try {
+    const raw = sessionStorage.getItem(CRED_KEY);
+    return raw ? JSON.parse(raw) as StoredCreds : null;
+  } catch { return null; }
+}
+
+function clearCreds() {
+  try { sessionStorage.removeItem(CRED_KEY); } catch { /* private mode */ }
+}
+
 export function GameProvider({ children }: { children: React.ReactNode }) {
   const [state, dispatch] = useReducer(clientReducer, initialClientState);
   const socketRef = useRef<GameSocket | null>(null);
@@ -29,8 +54,10 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
             roomId: msg.roomId,
             roomCode: msg.roomCode,
             hostId: msg.hostId,
+            phase: msg.phase,
             players: msg.players,
           },
+          phase: msg.phase,
         });
         break;
       case "game_started":
@@ -70,8 +97,10 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const createRoom = useCallback(async (playerName: string) => {
     try {
       dispatch({ type: "SET_CONNECTING" });
-      const data = await apiCreateRoom(playerName);
+      const userId = supabase ? (await supabase.auth.getUser()).data.user?.id ?? null : null;
+      const data = await apiCreateRoom(playerName, userId);
       dispatch({ type: "SET_CREDENTIALS", playerId: data.playerId, reconnectToken: data.reconnectToken });
+      saveCreds({ roomId: data.roomId, roomCode: data.roomCode, playerId: data.playerId, reconnectToken: data.reconnectToken });
       await connectSocket(data.roomCode, data.playerId, data.reconnectToken);
     } catch (e) {
       dispatch({ type: "SET_ERROR", error: (e as Error).message });
@@ -81,8 +110,10 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
   const joinRoom = useCallback(async (roomCode: string, playerName: string) => {
     try {
       dispatch({ type: "SET_CONNECTING" });
-      const data = await apiJoinRoom(roomCode, playerName);
+      const userId = supabase ? (await supabase.auth.getUser()).data.user?.id ?? null : null;
+      const data = await apiJoinRoom(roomCode, playerName, userId);
       dispatch({ type: "SET_CREDENTIALS", playerId: data.playerId, reconnectToken: data.reconnectToken });
+      saveCreds({ roomId: data.roomId, roomCode: data.roomCode, playerId: data.playerId, reconnectToken: data.reconnectToken });
       await connectSocket(data.roomCode, data.playerId, data.reconnectToken);
     } catch (e) {
       dispatch({ type: "SET_ERROR", error: (e as Error).message });
@@ -117,15 +148,29 @@ export function GameProvider({ children }: { children: React.ReactNode }) {
     socketRef.current?.send({ type: "leave_room" });
     socketRef.current?.disconnect();
     socketRef.current = null;
+    clearCreds();
     dispatch({ type: "RESET" });
   }, []);
 
-  // Cleanup on unmount
+  // Auto-reconnect on mount if stored credentials exist
   useEffect(() => {
+    const creds = loadCreds();
+    if (!creds) return;
+    dispatch({ type: "SET_CREDENTIALS", playerId: creds.playerId, reconnectToken: creds.reconnectToken });
+    dispatch({ type: "SET_CONNECTING" });
+    connectSocket(creds.roomCode, creds.playerId, creds.reconnectToken)
+      .then(() => {
+        // Request current state after reconnect
+        socketRef.current?.send({ type: "request_state" });
+      })
+      .catch(() => {
+        clearCreds();
+        dispatch({ type: "RESET" });
+      });
     return () => {
       socketRef.current?.disconnect();
     };
-  }, []);
+  }, [connectSocket]);
 
   return (
     <GameContext.Provider value={{ state, createRoom, joinRoom, setReady, startGame, rollDice, moveToken, requestRematch, leaveRoom }}>
